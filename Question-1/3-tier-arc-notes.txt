@@ -1,0 +1,7 @@
+I have created a simple 3-tier application with Presentation, application and Data Layer. 
+
+1. I have deployed a public IP using which Clients can connect to the Web VM (where the application is dpeloyed , an application gateway and load balancer can be put in front of the public IP for additional security)
+2. Adding an NSG rule in the presentation layer that allows RDP connections only from a safe set of public IP addresses.
+3. Deploying a VM for the web and business tiers where the application would run.We Can also use VM scale set or availability set for better performance.
+4. Deploying SQL server Database on the second VM segmented in the different subnet and secured with NSG in data Tier. 
+5.Every Azure VM is deployed into a virtual network and is segmented into subnets.Creating a separate subnet for each tier.

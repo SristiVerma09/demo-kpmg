@@ -1,0 +1,437 @@
+{
+    "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+        "sqlServerName": {
+            "type": "string",
+            "defaultValue": "[concat('demo-dbserver-', uniqueString(resourceGroup().id))]"
+        },
+          "username": {
+            "type": "string",
+            "defaultValue": "adminaccount"
+        },
+        "password": {
+            "type": "securestring"
+        }
+    },
+    "functions": [],
+    "variables": {
+        "sqlServerResourceId": "[resourceId('Microsoft.Sql/servers', parameters('sqlServerName'))]",
+        "sqlServerDatabaseName":"demo-sqldb",
+        "vnetName": "demo-vnet",
+        "vnetAddressPrefix": "10.1.0.0/16",
+        "vnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]",
+        "webVMName": "demo-web-vm",
+        "dataVMName": "demo-data-vm",
+        "dataSubnetName": "demo-data-subnet",
+        "dataNSGName": "demo-data-nsg",
+        "dataSubnetResourceId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('dataSubnetName'))]",
+        "dataSubnetPrefix": "10.1.1.0/24",
+        "dataVMNicResourceId": "[resourceId('Microsoft.Network/networkInterfaces', variables('dataVMNicName'))]",
+        "dataVMNicName": "demo-data-vm-nic",
+        "dataNSGResourceId": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('dataNSGName'))]",
+        "webSubnetName": "demo-web-subnet",
+        "webSubnetResourceId":  "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('webSubnetName'))]",
+        "webSubnetPrefix": "10.1.0.0/24",
+        "webNSGName": "demo-web-nsg",
+        "webNSGResourceId": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('webNSGName'))]",
+        "webVMNicPIPName": "demo-web-vm-nic-pip",
+        "webVMNicName": "demo-web-vm-nic",
+        "webVMNicResourceId": "[resourceId('Microsoft.Network/networkInterfaces', variables('webVMNicName'))]",
+        "webVMNicPIPResourceId": "[resourceId('Microsoft.Network/publicIPAddresses', variables('webVMNicPIPName'))]"
+    },
+    "resources": [
+         //deploying sql server , DB in Data tier
+        {
+           
+            "type": "Microsoft.Sql/servers",
+            "kind": "v12.0",
+            "name": "[parameters('sqlServerName')]",
+            "apiVersion": "2015-05-01-preview",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "data"
+            },
+            "scale": null,
+            "properties": {
+                "administratorLogin": "[parameters('username')]",
+                "administratorLoginPassword": "[parameters('password')]",
+                "version": "12.0"
+            },
+            //deploying Database in SQL server
+            "resources": [
+                {
+                    "type": "databases",
+                    "sku": {
+                        "name": "S0",
+                        "tier": "Standard"
+                    },
+                    "kind": "v12.0,user",
+                    "name": "[variables('sqlServerDatabaseName')]",
+                    "apiVersion": "2017-03-01-preview",
+                    "location": "[resourceGroup().location]",
+                    "tags":{
+                        "tier":"data"
+                    },
+                    "scale": null,
+                    "properties": {
+                        "collation": "SQL_Latin1_General_CP1_CI_AS"
+                    },
+                    "dependsOn": [
+                        "[variables('sqlServerResourceId')]"
+                    ]
+                }
+            ],
+             "dependsOn": []
+        },
+        //deploying service endpoint rules for azure sql server in demo-data-subnet
+        {
+            "type": "Microsoft.Sql/servers/virtualNetworkRules",
+            "name": "[concat(parameters('sqlServerName'), '/demo-vnet-data-rule')]",
+            "apiVersion": "2015-05-01-preview",
+            "location": "[resourceGroup().location]",
+            "properties": {
+                "ignoreMissingVnetServiceEndpoint": false,
+                "virtualNetworkSubnetId": "[variables('dataSubnetResourceId')]"
+            },
+            "dependsOn": [
+                "[variables('vnetResourceId')]",
+                "[variables('sqlServerResourceId')]"
+            ]
+        },
+        //deploying Vnet for both data layer and Presentation layer
+         {
+            "type": "Microsoft.Network/virtualNetworks",
+            "name": "[variables('vnetName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier1": "data",
+                "tier2": "Presentation"
+            },
+            "properties": {
+                "addressSpace": {
+                    "addressPrefixes": [
+                        "[variables('vnetAddressPrefix')]"
+                    ]
+                },
+                "subnets": [
+                    {
+                        "name": "[variables('webSubnetName')]",
+                        "properties": {
+                            "addressPrefix": "[variables('webSubnetPrefix')]"
+                        }
+                    },
+                    {
+                        "name": "[variables('dataSubnetName')]",
+                        "properties": {
+                            "addressPrefix": "[variables('dataSubnetPrefix')]",
+                            "serviceEndpoints": [
+                                {
+                                    "service": "Microsoft.Sql",
+                                    "locations": [
+                                        "[resourceGroup().location]"
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            "dependsOn": []
+        },
+        //deploying NSG on top of data layer
+         {
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "name": "[variables('dataNSGName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "application"
+            },
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "http",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "80",
+                            "sourceAddressPrefix": "10.1.0.0/24",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 300,
+                            "direction": "Inbound"
+                        }
+                    },
+                    {
+                        "name": "DenyInbound",
+                        "properties": {
+                            "protocol": "*",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "*",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Deny",
+                            "priority": 400,
+                            "direction": "Inbound"
+                        }
+                    }
+                ]
+            },
+            "dependsOn": []
+        },
+        //deploying NSG on top of presentation(web) layer
+        {
+            "type": "Microsoft.Network/networkSecurityGroups",
+            "name": "[variables('webNSGName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier1": "presentation"
+            },
+            "properties": {
+                "securityRules": [
+                    {
+                        "name": "http",
+                        "properties": {
+                            "protocol": "Tcp",
+                            "sourcePortRange": "*",
+                            "destinationPortRange": "80",
+                            "sourceAddressPrefix": "*",
+                            "destinationAddressPrefix": "*",
+                            "access": "Allow",
+                            "priority": 300,
+                            "direction": "Inbound"
+                        }
+                    }
+                ]
+            },
+            "dependsOn": []
+        },
+        //deploying NIC card for WEB VM where our application will run in presentation layer 
+         {
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[variables('webVMNicName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "presentation"
+            },
+            "scale": null,
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIPAddress": "10.1.0.4",
+                            "privateIPAllocationMethod": "Static",
+                            "publicIPAddress": {
+                                "id": "[variables('webVMNicPIPResourceId')]"
+                            },
+                            "subnet": {
+                                "id": "[variables('webSubnetResourceId')]"
+                            },
+                            "primary": true,
+                            "privateIPAddressVersion": "IPv4"
+                        }
+                    }
+                ],
+                "enableAcceleratedNetworking": false,
+                "enableIPForwarding": false,
+                "primary": true,
+                "networkSecurityGroup": {
+                    "id": "[variables('webNSGResourceId')]"
+                }
+            },
+            "dependsOn": [
+                "[variables('webVMNicPIPName')]",
+                "[variables('vnetResourceId')]",
+                "[variables('webNSGResourceId')]"
+            ]
+        },
+        //deploying NIC card for sql server VM
+         {
+            "type": "Microsoft.Network/networkInterfaces",
+            "name": "[variables('dataVMNicName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "application"
+            },
+            "scale": null,
+            "properties": {
+                "ipConfigurations": [
+                    {
+                        "name": "ipconfig1",
+                        "properties": {
+                            "privateIPAddress": "10.1.1.4",
+                            "privateIPAllocationMethod": "Static",
+                            "subnet": {
+                                "id": "[variables('dataSubnetResourceId')]"
+                            },
+                            "primary": true,
+                            "privateIPAddressVersion": "IPv4"
+                        }
+                    }
+                ],
+                "enableAcceleratedNetworking": false,
+                "enableIPForwarding": false,
+                "primary": true,
+                "networkSecurityGroup": {
+                    "id": "[variables('dataNSGResourceId')]"
+                }
+            },
+            "dependsOn": [
+                "[variables('vnetResourceId')]",
+                "[variables('dataNSGResourceId')]"
+            ]
+        },
+        //deploying Public IP  in presentation layer for NIC card to use for WEB VM
+        {
+            "type": "Microsoft.Network/publicIPAddresses",
+            "sku": {
+                "name": "Basic",
+                "tier": "Regional"
+            },
+            "name": "[variables('webVMNicPIPName')]",
+            "apiVersion": "2018-08-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "presentation"
+            },
+            "properties": {
+                "publicIPAddressVersion": "IPv4",
+                "publicIPAllocationMethod": "Static",
+                "idleTimeoutInMinutes": 4
+            },
+            "dependsOn": []
+        },
+        //deploying VM for Presentation layer 
+        {
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[variables('webVMName')]",
+            "apiVersion": "2018-06-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "presentation"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "Standard_D2s_v3"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "UbuntuServer",
+                        "sku": "18.04-LTS",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "osType": "Linux",
+                        "name": "[concat(variables('webVMName'), '-disk')]",
+                        "createOption": "FromImage",
+                        "caching": "ReadWrite",
+                        "managedDisk": {
+                            "storageAccountType": "Premium_LRS"
+                        },
+                        "diskSizeGB": 30
+                    },
+                    "dataDisks": []
+                },
+                "osProfile": {
+                    "computerName": "[variables('webVMName')]",
+                    "adminUsername": "[parameters('username')]",
+                    "adminPassword": "[parameters('password')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false,
+                        "provisionVMAgent": true
+                    },
+                    "secrets": [],
+                    "allowExtensionOperations": true
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[variables('webVMNicResourceId')]"
+                        }
+                    ]
+                },
+                "diagnosticsProfile": {
+                    "bootDiagnostics": {
+                        "enabled": false
+                    }
+                }
+            },
+            "dependsOn": [
+                "[variables('webVMNicName')]"
+            ]
+        },
+         //deploying VM for Application layer
+          {
+            "type": "Microsoft.Compute/virtualMachines",
+            "name": "[variables('dataVMName')]",
+            "apiVersion": "2018-06-01",
+            "location": "[resourceGroup().location]",
+            "tags": {
+                "tier": "application"
+            },
+            "properties": {
+                "hardwareProfile": {
+                    "vmSize": "Standard_D2s_v3"
+                },
+                "storageProfile": {
+                    "imageReference": {
+                        "publisher": "Canonical",
+                        "offer": "UbuntuServer",
+                        "sku": "18.04-LTS",
+                        "version": "latest"
+                    },
+                    "osDisk": {
+                        "osType": "Linux",
+                        "name": "[concat(variables('dataVMName'), '-disk')]",
+                        "createOption": "FromImage",
+                        "caching": "ReadWrite",
+                        "managedDisk": {
+                            "storageAccountType": "Premium_LRS"
+                        },
+                        "diskSizeGB": 30
+                    },
+                    "dataDisks": []
+                },
+                "osProfile": {
+                    "computerName": "[variables('dataVMName')]",
+                    "adminUsername": "[parameters('username')]",
+                    "adminPassword": "[parameters('password')]",
+                    "linuxConfiguration": {
+                        "disablePasswordAuthentication": false,
+                        "provisionVMAgent": true
+                    },
+                    "secrets": [],
+                    "allowExtensionOperations": true
+                },
+                "networkProfile": {
+                    "networkInterfaces": [
+                        {
+                            "id": "[variables('dataVMNicResourceId')]"
+                        }
+                    ]
+                },
+                "diagnosticsProfile": {
+                    "bootDiagnostics": {
+                        "enabled": false
+                    }
+                }
+            },
+            "dependsOn": [
+                "[variables('dataVMNicName')]"
+            ]
+        }
+     ],
+    "outputs": {
+        "webSiteUrl": {
+            "type":"string",
+            "value": "[concat('http://', reference(resourceId('Microsoft.Network/publicIPAddresses',variables('webVMNicPIPName'))).IpAddress)]"
+        }
+    }
+}
